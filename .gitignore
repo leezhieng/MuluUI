@@ -1,0 +1,29 @@
+# Build output
+build/
+out/
+.vs/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+*.user
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor / OS
+.vscode/
+.vscode-server/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# vcpkg
+.vcpkg/

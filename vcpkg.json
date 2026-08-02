@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "muluui",
+  "version": "0.1.0",
+  "description": "A cross-platform C++ GUI SDK (Qt-Widgets-like API) that wraps native GUI toolkits: WinUI3 on Windows, GTK/KDE on Linux, SwiftUI on macOS.",
+  "license": "MIT",
+  "dependencies": [
+    "tinyxml2"
+  ],
+  "features": {
+    "windows-winui": {
+      "description": "Windows (WinUI3) backend via the Windows App SDK",
+      "dependencies": [
+        "microsoft-windowsappsdk"
+      ]
+    }
+  },
+  "default-features": [
+    "windows-winui"
+  ],
+  "supports": "windows | linux | osx"
+}
