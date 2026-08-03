@@ -37,7 +37,12 @@ bool MWindowsPlatform::initialize(int /*argc*/, char** /*argv*/)
 {
     // Initialize the Windows App Runtime for unpackaged applications.
     // MddBootstrapInitialize must complete before Application::Start runs.
-    const HRESULT hr = MddBootstrapInitialize(MICROSOFT_WINDOWSAPPSDK_RELEASE_MAJOR);
+    // Windows App SDK 2.x requires the full (majorMinor, versionTag, minVersion)
+    // triplet — the 1-argument overload no longer exists.
+    const HRESULT hr = MddBootstrapInitialize(
+        WINDOWSAPPSDK_RELEASE_MAJORMINOR,
+        WINDOWSAPPSDK_RELEASE_VERSION_TAG_W,
+        WINDOWSAPPSDK_RUNTIME_VERSION_UINT64);
     return SUCCEEDED(hr);
 }
 

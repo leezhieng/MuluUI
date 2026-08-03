@@ -110,7 +110,7 @@ void MWindowsWindow::createXamlWindow()
 
     // Expose the backing Win32 HWND through the native handle API.
     m_nativeHandle = reinterpret_cast<void*>(
-        winrt::Microsoft::UI::Interop::WindowNative::GetWindowHandle(m_window));
+        winrt::Microsoft::UI::GetWindowFromWindowId(m_window.AppWindow().Id()));
 }
 
 void MWindowsWindow::syncWidgetTree(MWidget* root)
@@ -126,7 +126,7 @@ void MWindowsWindow::syncWidgetTree(MWidget* root)
     }
 }
 
-winrt::Microsoft::UI::Xaml::Controls::UIElement MWindowsWindow::toXamlElement(MWidget* widget)
+winrt::Microsoft::UI::Xaml::UIElement MWindowsWindow::toXamlElement(MWidget* widget)
 {
     using namespace winrt::Microsoft::UI::Xaml::Controls;
 

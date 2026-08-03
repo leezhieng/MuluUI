@@ -62,22 +62,17 @@ if(WIN32)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
     )
 
-    # Windows App SDK (WinUI3) provisioned via vcpkg (microsoft-windowsappsdk)
-    # or the Microsoft.WindowsAppSDK NuGet package.
-    find_package(Microsoft.WindowsAppSDK CONFIG REQUIRED)
-    target_link_libraries(MuluUI PRIVATE Microsoft.WindowsAppSDK)
-
-    # Bootstrap for unpackaged (self-contained) deployment.
-    find_package(Microsoft.WindowsAppRuntime.Bootstrap CONFIG QUIET)
-    if(Microsoft.WindowsAppRuntime.Bootstrap_FOUND)
-        target_link_libraries(MuluUI PRIVATE Microsoft.WindowsAppRuntime.Bootstrap)
-    endif()
+    # Windows App SDK (WinUI3). There is no vcpkg port and no CMake config in
+    # the NuGet packages, so cmake/WindowsAppSDK.cmake restores the package
+    # tree via NuGet, generates the C++/WinRT projection headers with cppwinrt
+    # and wires up includes + the Windows App Runtime bootstrap library.
+    include(cmake/WindowsAppSDK.cmake)
+    mulu_enable_windows_app_sdk(MuluUI)
 
     target_compile_definitions(MuluUI PRIVATE MULU_PLATFORM_WINDOWS=1)
 
     if(MSVC)
         target_compile_options(MuluUI PRIVATE
-            /await
             /EHsc
             /Zc:preprocessor
             /permissive-

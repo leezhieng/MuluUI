@@ -64,6 +64,7 @@ public:
         return *this;
     }
     MString& operator+=(const MString& other) { return append(other); }
+    void clear() { m_data.clear(); }
 
 private:
     std::string m_data;
