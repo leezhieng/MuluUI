@@ -378,6 +378,15 @@ def main() -> None:
     log(f"Platform: {platform_name} ({platform.system()} {platform.machine()})")
 
     # ------------------------------------------------------------------
+    # Build directory setup (shared by preset and non-preset paths).
+    # ------------------------------------------------------------------
+    build_dir = Path(args.build_dir).resolve()
+
+    if args.clean and build_dir.exists():
+        log(f"Cleaning build directory: {build_dir}")
+        shutil.rmtree(build_dir)
+
+    # ------------------------------------------------------------------
     # Preset mode: delegate everything to CMakePresets.json.
     # ------------------------------------------------------------------
     if args.preset:
@@ -432,12 +441,6 @@ def main() -> None:
 
     if args.triplet is None and args.toolchain:
         args.triplet = default_triplet(platform_name)
-
-    build_dir = Path(args.build_dir).resolve()
-
-    if args.clean and build_dir.exists():
-        log(f"Cleaning build directory: {build_dir}")
-        shutil.rmtree(build_dir)
 
     configure(platform_name, args, build_dir)
     build(args, build_dir)
