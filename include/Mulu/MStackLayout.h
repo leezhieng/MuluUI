@@ -22,6 +22,9 @@ public:
 
     const std::vector<MWidget*>& widgets() const { return m_widgets; }
 
+    // layout() override — distributes space among children.
+    void layout() override;
+
 private:
     Orientation m_orientation = Orientation::Vertical;
     std::vector<MWidget*> m_widgets;

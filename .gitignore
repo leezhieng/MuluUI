@@ -28,3 +28,6 @@ Thumbs.db
 # vcpkg
 .vcpkg/
 vcpkg
+
+# Local dependencies (built by download_dep.py)
+dependencies/

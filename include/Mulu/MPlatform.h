@@ -33,6 +33,10 @@ public:
 
     // Rebuild the native widget tree to match the logical MWidget tree.
     virtual void syncWidgetTree(MWidget* root) = 0;
+
+    // Set embedded font data for text rendering (optional).
+    // Default implementation does nothing; the SDL+OpenGL backend uses it.
+    virtual void setFontData(const unsigned char* /*data*/, unsigned int /*size*/) {}
 };
 
 // ---------------------------------------------------------------------------

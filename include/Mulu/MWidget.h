@@ -36,6 +36,11 @@ public:
     virtual void onShown() {}
     virtual void onHidden() {}
 
+    // Layout pass — called by the platform window before rendering.
+    // Widgets that contain children (e.g. MStackLayout) override this
+    // to assign geometries to their children.
+    virtual void layout() {}
+
 protected:
     MRect m_geometry;
     bool m_visible = false;

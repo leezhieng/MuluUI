@@ -57,4 +57,45 @@ void MStackLayout::clear()
     }
 }
 
+void MStackLayout::layout()
+{
+    const int count = static_cast<int>(m_widgets.size());
+    if (count == 0) {
+        return;
+    }
+
+    const int lx = m_geometry.x();
+    const int ly = m_geometry.y();
+    const int lw = m_geometry.width();
+    const int lh = m_geometry.height();
+
+    if (m_orientation == Orientation::Vertical) {
+        const int childHeight = lh / count;
+        int y = ly;
+        for (int i = 0; i < count; ++i) {
+            MWidget* child = m_widgets[i];
+            // Auto-size children that haven't been given an explicit
+            // geometry yet (width == 0 || height == 0 → uninitialised).
+            if (child->geometry().isEmpty()) {
+                child->setGeometry(MRect(lx, y, lw, childHeight));
+            }
+            // Advance by the child's actual height (explicit or computed).
+            y += child->geometry().height();
+            child->layout(); // recurse into nested layouts
+        }
+    } else {
+        const int childWidth = lw / count;
+        int x = lx;
+        for (int i = 0; i < count; ++i) {
+            MWidget* child = m_widgets[i];
+            if (child->geometry().isEmpty()) {
+                child->setGeometry(MRect(x, ly, childWidth, lh));
+            }
+            // Advance by the child's actual width (explicit or computed).
+            x += child->geometry().width();
+            child->layout(); // recurse into nested layouts
+        }
+    }
+}
+
 } // namespace mulu

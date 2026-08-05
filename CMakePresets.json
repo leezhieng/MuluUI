@@ -3,8 +3,8 @@
   "cmakeMinimumRequired": { "major": 3, "minor": 22, "patch": 0 },
   "configurePresets": [
     {
-      "name": "windows",
-      "displayName": "Windows (MSVC + vcpkg)",
+      "name": "default",
+      "displayName": "Default (MSVC + vcpkg)",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build",
@@ -15,8 +15,8 @@
   ],
   "buildPresets": [
     {
-      "name": "windows",
-      "configurePreset": "windows",
+      "name": "default",
+      "configurePreset": "default",
       "configuration": "Release"
     }
   ]

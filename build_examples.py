@@ -2,10 +2,9 @@
 """Build all MuluUI examples.
 
 Reuses the platform-aware CMake logic from build_sdk.py (generator
-selection, vcpkg toolchain discovery, per-platform triplets). It:
+selection, dependency detection, linkage config). It:
 
-  1. discovers every example under examples/ (a sub-directory containing a
-     CMakeLists.txt that declares one or more add_executable targets),
+  1. discovers every example under examples/,
   2. configures the project once,
   3. builds each discovered example target and reports a per-target summary.
 
@@ -13,7 +12,7 @@ Usage examples:
     python build_examples.py                 # build every example (Release)
     python build_examples.py -c Debug -j 8
     python build_examples.py --only hello    # build only the 'hello' example
-    python build_examples.py --no-vcpkg
+    python build_examples.py --shared        # force shared linkage
 """
 
 from __future__ import annotations
@@ -51,7 +50,6 @@ def discover_examples() -> List[Tuple[str, Path]]:
         if not cmake_file.is_file():
             continue
 
-        # Parse the executable target names declared by the example.
         targets: List[str] = []
         try:
             text = cmake_file.read_text(encoding="utf-8")
@@ -103,15 +101,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--toolchain", default=None,
-        help="Path to a CMake toolchain file (default: auto-detect vcpkg)",
+        help="Path to a CMake toolchain file (overrides local deps + vcpkg)",
     )
     parser.add_argument(
-        "--no-vcpkg", action="store_true",
-        help="Do not use the vcpkg toolchain (builds the core only)",
+        "--no-deps", action="store_true",
+        help="Do not use local dependencies or vcpkg (core library only)",
     )
     parser.add_argument(
         "--triplet", default=None,
-        help="vcpkg target triplet (default: per-platform)",
+        help="vcpkg target triplet (only used with vcpkg toolchain)",
     )
     parser.add_argument(
         "-D", "--define", dest="defines", action="append", default=[],
@@ -122,13 +120,25 @@ def main() -> None:
         "-v", "--verbose", action="store_true",
         help="Verbose build output",
     )
+
+    # Linkage overrides (only meaningful with local deps).
+    linkage = parser.add_mutually_exclusive_group()
+    linkage.add_argument(
+        "--shared", action="store_true", default=None,
+        help="Force shared linkage (overrides download_dep.py config)",
+    )
+    linkage.add_argument(
+        "--static", action="store_true", default=None,
+        help="Force static linkage (overrides download_dep.py config)",
+    )
+
     args = parser.parse_args()
 
     platform_name = sdk.detect_platform()
     log(f"Platform: {platform_name} ({sys.platform})")
 
     # ----------------------------------------------------------------------
-    # Discover examples.
+    # Discover examples
     # ----------------------------------------------------------------------
     examples = discover_examples()
     if not examples:
@@ -147,30 +157,49 @@ def main() -> None:
     log(f"Examples to build: {names}")
 
     # ----------------------------------------------------------------------
-    # Generator selection.
+    # Generator selection
     # ----------------------------------------------------------------------
     if args.generator is None:
         args.generator = sdk.pick_generator(platform_name)
     log(f"Generator: {args.generator}")
 
     # ----------------------------------------------------------------------
-    # vcpkg toolchain detection.
+    # Resolve shared/static from saved config if not overridden
     # ----------------------------------------------------------------------
-    if args.toolchain is None and not args.no_vcpkg:
+    if args.shared is None and args.static is None:
+        cfg = sdk.load_dep_config()
+        if cfg and "linkage" in cfg:
+            if cfg["linkage"] == "shared":
+                args.shared = True
+            else:
+                args.static = True
+            log(f"Linkage from saved config: {cfg['linkage']}")
+
+    if args.shared:
+        log("Linkage: shared (.dll / .so)")
+    elif args.static:
+        log("Linkage: static (.lib / .a)")
+
+    # ----------------------------------------------------------------------
+    # Dependency detection
+    # ----------------------------------------------------------------------
+    if args.toolchain:
+        log(f"Using explicit toolchain: {args.toolchain}")
+    elif args.no_deps:
+        log("--no-deps: building core library only")
+    elif sdk.deps_available():
+        log(f"Local dependencies found: {sdk.DEPS_INSTALL}")
+    else:
         vcpkg_root = sdk.find_vcpkg_root()
         if vcpkg_root:
-            args.toolchain = str(sdk.vcpkg_toolchain_path(vcpkg_root))
-            log(f"vcpkg toolchain: {args.toolchain}")
+            log(f"vcpkg found at {vcpkg_root}")
         else:
-            if platform_name == "windows":
-                sdk.die(
-                    "vcpkg not found and it is required for the Windows App SDK "
-                    "(WinUI3 backend). Install vcpkg and set VCPKG_ROOT, or pass "
-                    "--no-vcpkg to build the core only."
-                )
-            log("vcpkg not found; building without a toolchain file.")
-    elif args.toolchain:
-        log(f"Toolchain: {args.toolchain}")
+            sdk.die(
+                "No dependencies found.\n\n"
+                "Run one of the following first:\n"
+                f"  python download_dep.py          (recommended – local build)\n"
+                "  vcpkg install sdl3 tinyxml2     (system package manager)\n"
+            )
 
     if args.triplet is None and args.toolchain:
         args.triplet = sdk.default_triplet(platform_name)
@@ -182,18 +211,18 @@ def main() -> None:
         shutil.rmtree(build_dir)
 
     # ----------------------------------------------------------------------
-    # Configure once (the project registers all examples via add_subdirectory).
+    # Configure once
     # ----------------------------------------------------------------------
     sdk.configure(platform_name, args, build_dir)
 
     # ----------------------------------------------------------------------
-    # Build every example target, keeping going past individual failures.
+    # Build every example target
     # ----------------------------------------------------------------------
     failed: List[str] = []
     for target, _ in examples:
         log(f"Building example: {target}")
         build_cmd = ["cmake", "--build", str(build_dir), "--target", target]
-        if args.config and sdk.is_multi_config(args.generator):
+        if args.config and sdk.is_multi_config(args.generator, platform_name):
             build_cmd += ["--config", args.config]
         if args.jobs:
             build_cmd += ["--parallel", str(args.jobs)]

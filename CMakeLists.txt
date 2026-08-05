@@ -48,13 +48,19 @@ endif()
 
 project(MuluUI
     VERSION 0.1.0
-    DESCRIPTION "Cross-platform C++ GUI SDK wrapping native toolkits"
+    DESCRIPTION "Cross-platform C++ GUI SDK with SDL3 + OpenGL 3.3 GPU renderer"
     LANGUAGES CXX
 )
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# MSVC: treat all source files as UTF-8 (suppresses C4819 warnings on systems
+# where the locale codepage is not UTF-8, e.g. codepage 936 / GBK).
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -63,9 +69,29 @@ endif()
 # ---------------------------------------------------------------------------
 # Core dependencies
 # ---------------------------------------------------------------------------
-# tinyxml2 powers the Qt Designer .ui form loader (MUiLoader). Linked PUBLIC
-# because MuluUI is a static library and consumers need it too.
+# CMAKE_PREFIX_PATH can be set by build_sdk.py to point at the locally-built
+# dependencies in dependencies/install/ (produced by download_dep.py).
+if(DEFINED CMAKE_PREFIX_PATH)
+    message(STATUS "MuluUI: using dependency prefix: ${CMAKE_PREFIX_PATH}")
+endif()
+
+# tinyxml2 powers the Qt Designer .ui form loader (MUiLoader).
 find_package(tinyxml2 CONFIG QUIET)
+
+# SDL3 + OpenGL are the sole rendering backend.
+find_package(SDL3 CONFIG QUIET)
+if(NOT SDL3_FOUND)
+    message(FATAL_ERROR
+        "MuluUI: SDL3 not found.\n"
+        "Run download_dep.py to build it locally:\n"
+        "    python download_dep.py\n"
+        "Or install via vcpkg:\n"
+        "    vcpkg install sdl3\n"
+        "Or set SDL3_DIR to a pre-built SDL3 install prefix."
+    )
+endif()
+
+find_package(OpenGL REQUIRED)
 
 # ---------------------------------------------------------------------------
 # MuluUI core library
@@ -108,46 +134,53 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# Platform backends
-#
-# Windows-first: the WinUI3 backend is built whenever we are on Windows.
-# Additional backends (Linux/GTK, macOS/SwiftUI) plug in here later.
+# SDL3 + OpenGL 3.3 backend
 # ---------------------------------------------------------------------------
-if(WIN32)
-    message(STATUS "MuluUI: enabling Windows (WinUI3) backend")
+message(STATUS "MuluUI: enabling SDL3 + OpenGL 3.3 backend")
 
-    target_sources(MuluUI PRIVATE
-        src/platform/windows/MWindowsPlatform.cpp
-        src/platform/windows/MWindowsWindow.cpp
-        src/platform/windows/MWinUIApp.cpp
-    )
-    target_include_directories(MuluUI PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
-    )
+set(MULU_SDL_SOURCES
+    src/platform/sdl/MOpenGLPlatform.cpp
+    src/platform/sdl/MOpenGLWindow.cpp
+    src/platform/sdl/GLRenderer.cpp
+    src/platform/sdl/GLFuncs.cpp
+)
 
-    # Windows App SDK (WinUI3). There is no vcpkg port and no CMake config in
-    # the NuGet packages, so cmake/WindowsAppSDK.cmake restores the package
-    # tree via NuGet, generates the C++/WinRT projection headers with cppwinrt
-    # and wires up includes + the Windows App Runtime bootstrap library.
-    include(cmake/WindowsAppSDK.cmake)
-    mulu_enable_windows_app_sdk(MuluUI)
-
-    target_compile_definitions(MuluUI PRIVATE MULU_PLATFORM_WINDOWS=1)
-
-    if(MSVC)
-        target_compile_options(MuluUI PRIVATE
-            /EHsc
-            /Zc:preprocessor
-            /permissive-
-            /bigobj
-        )
-    endif()
+# TextRenderer requires stb_truetype.h (single-header, public domain).
+# download_dep.py places it in dependencies/install/include/.
+set(_stb_path "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/install/include/stb_truetype.h")
+if(EXISTS "${_stb_path}")
+    message(STATUS "MuluUI: stb_truetype.h found — TextRenderer enabled")
+    list(APPEND MULU_SDL_SOURCES src/platform/sdl/TextRenderer.cpp)
 else()
     message(WARNING
-        "MuluUI: no backend for the current platform yet "
-        "(Windows/WinUI3 is the first target; Linux/macOS backends are planned)"
+        "MuluUI: stb_truetype.h not found at ${_stb_path} — "
+        "Text rendering will be disabled.\n"
+        "  Run download_dep.py to fetch it:\n"
+        "    python download_dep.py"
     )
-    target_compile_definitions(MuluUI PRIVATE MULU_PLATFORM_UNSUPPORTED=1)
+    target_compile_definitions(MuluUI PRIVATE MULU_NO_TEXT_RENDERER=1)
+endif()
+
+target_sources(MuluUI PRIVATE ${MULU_SDL_SOURCES})
+target_include_directories(MuluUI PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/sdl
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/install/include
+)
+
+target_link_libraries(MuluUI PUBLIC
+    SDL3::SDL3
+    OpenGL::GL
+)
+
+target_compile_definitions(MuluUI PRIVATE MULU_PLATFORM_SDL_OPENGL=1)
+
+if(MSVC)
+    target_compile_options(MuluUI PRIVATE
+        /EHsc
+        /Zc:preprocessor
+        /permissive-
+        /utf-8
+    )
 endif()
 
 # ---------------------------------------------------------------------------
@@ -174,4 +207,8 @@ install(EXPORT MuluUITargets
 # ---------------------------------------------------------------------------
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_subdirectory(examples/hello)
+    add_subdirectory(examples/sdlhello)
+    if(tinyxml2_FOUND)
+        add_subdirectory(examples/uiloader)
+    endif()
 endif()

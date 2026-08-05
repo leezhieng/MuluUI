@@ -108,4 +108,19 @@ void* MWindow::nativeHandle() const
     return m_platformWindow ? m_platformWindow->nativeHandle() : nullptr;
 }
 
+void MWindow::setFontData(const unsigned char* data, unsigned int size)
+{
+    if (m_platformWindow) {
+        m_platformWindow->setFontData(data, size);
+    } else {
+        // Platform window not yet created; store for later use.
+        // (In practice, call setFontData before show() so the window
+        //  is created lazily with the font data available.)
+        ensurePlatformWindow();
+        if (m_platformWindow) {
+            m_platformWindow->setFontData(data, size);
+        }
+    }
+}
+
 } // namespace mulu

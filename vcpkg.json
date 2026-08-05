@@ -2,9 +2,10 @@
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "muluui",
   "version": "0.1.0",
-  "description": "A cross-platform C++ GUI SDK that wraps native GUI toolkits: WinUI3 on Windows, GTK/KDE on Linux, SwiftUI on macOS. On Windows the WinUI3 backend (Windows App SDK) is provisioned via NuGet by cmake/WindowsAppSDK.cmake, not via vcpkg.",
+  "description": "A cross-platform C++ GUI SDK with an SDL3 + OpenGL 3.3 GPU renderer featuring custom GLSL shaders for Fluent Design-style visuals.",
   "license": "MIT",
   "dependencies": [
+    "sdl3",
     "tinyxml2"
   ],
   "supports": "windows | linux | osx"

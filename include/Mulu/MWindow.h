@@ -46,6 +46,10 @@ public:
     // Native access ---------------------------------------------------------
     void* nativeHandle() const;
 
+    // Set embedded font data for text rendering (SDL+OpenGL backend).
+    // Must be called before show().
+    void setFontData(const unsigned char* data, unsigned int size);
+
     // Internal API used by the platform backend -----------------------------
     void handleClose();
     void requestWidgetSync(MWidget* widget);

@@ -2,23 +2,18 @@
 """Cross-platform CMake build driver for the MuluUI SDK.
 
 Detects the running platform and runs the appropriate CMake configure +
-build steps, wiring in the vcpkg toolchain automatically when available
-(required for the tinyxml2 core dependency). On Windows, the WinUI3 /
-Windows App SDK dependency is provisioned by CMake via NuGet (see
-cmake/WindowsAppSDK.cmake); vcpkg only provides tinyxml2.
+build steps.  If ``download_dep.py`` has been run, the locally-built
+dependencies in ``dependencies/install/`` are used automatically; otherwise
+the script falls back to system-installed packages (vcpkg, apt, brew).
 
 Usage examples:
     python build_sdk.py                    # Release, auto-detected generator
     python build_sdk.py -c Debug -j 8
     python build_sdk.py -g Ninja --clean
-    python build_sdk.py --target hello -DCMAKE_BUILD_TYPE=Debug
-    python build_sdk.py --preset windows   # use a CMakePresets.json preset
-    python build_sdk.py --no-vcpkg         # build the core without vcpkg deps
-    python build_sdk.py --install-vcpkg    # auto-install vcpkg if missing (CI-friendly)
-
-When vcpkg is required but not found, the script prompts to install it
-(clones microsoft/vcpkg and runs the bootstrap script) unless stdin is not
-a terminal or --install-vcpkg / --no-vcpkg is given.
+    python build_sdk.py --target hello
+    python build_sdk.py --preset default   # use a CMakePresets.json preset
+    python build_sdk.py --shared           # force shared linkage (overrides config)
+    python build_sdk.py --static           # force static linkage
 
 Platform -> generator mapping:
     Windows : newest installed Visual Studio generator (falls back to Ninja)
@@ -29,6 +24,7 @@ Platform -> generator mapping:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shutil
@@ -39,19 +35,12 @@ from typing import List, NoReturn, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 BUILD_DIR_DEFAULT = PROJECT_ROOT / "build"
+DEPS_DIR = PROJECT_ROOT / "dependencies"
+DEPS_INSTALL = DEPS_DIR / "install"
+DEPS_CONFIG = DEPS_DIR / ".mulu_dep_config.json"
 
 # Generators that build every configuration at once (vs. single-config ones).
 MULTI_CONFIG_GENERATORS = ("visual studio", "ninja multi-config")
-
-# NuGet/CMake reports the Microsoft.WindowsAppSDK package as missing when the
-# WinUI (Windows application development) workload is not installed in Visual
-# Studio. Detect that failure and point the user at the fix instead of dumping
-# a generic "command failed" error.
-_WINDOWSAPPSDK_MISSING_PATTERN = "microsoft-windowsappsdk does not exist"
-WINDOWSAPPSDK_INSTALL_HINT = (
-    "Please install WinUI application development package from "
-    "Visual Studio Installer"
-)
 
 
 def log(message: str) -> None:
@@ -61,13 +50,6 @@ def log(message: str) -> None:
 def die(message: str) -> NoReturn:
     print(f"[build_sdk] ERROR: {message}", file=sys.stderr, flush=True)
     sys.exit(1)
-
-
-def _normalize_text(text: str) -> str:
-    """Lowercase and strip punctuation so that variants such as
-    "Microsoft.WindowsAppSDK does not exist", "microsoft-windowsappsdk does not
-    exist", etc. all normalize to the same token sequence."""
-    return "".join(ch.lower() for ch in text if ch.isalnum())
 
 
 def run(cmd: List[str], cwd: Optional[Path] = None, shell: bool = False) -> None:
@@ -85,20 +67,17 @@ def run(cmd: List[str], cwd: Optional[Path] = None, shell: bool = False) -> None
         )
     except FileNotFoundError:
         die(f"command not found: {cmd[0]}. Is it installed and on PATH?")
-    # Stream the output to the terminal while keeping a copy for error
-    # analysis (needed to detect the missing Windows App SDK package error).
     assert proc.stdout is not None
-    output: List[str] = []
     for line in proc.stdout:
-        print(line, end="", flush=True)
-        output.append(line)
+        # Encode safely for the terminal, replacing unencodable characters
+        # (e.g. on GBK/CP936 Windows terminals when embedding binary paths).
+        try:
+            print(line, end="", flush=True)
+        except UnicodeEncodeError:
+            print(line.encode("ascii", errors="replace").decode("ascii"),
+                  end="", flush=True)
     proc.wait()
     if proc.returncode != 0:
-        combined = "".join(output)
-        if _normalize_text(_WINDOWSAPPSDK_MISSING_PATTERN) in _normalize_text(
-            combined
-        ):
-            die(WINDOWSAPPSDK_INSTALL_HINT)
         die(f"command failed with exit code {proc.returncode}: {' '.join(cmd)}")
 
 
@@ -114,7 +93,6 @@ def detect_platform() -> str:
 
 
 def _cmake_help() -> str:
-    """Return the `cmake --help` output (shared by the generator helpers)."""
     try:
         result = subprocess.run(
             ["cmake", "--help"], capture_output=True, text=True, check=False
@@ -129,7 +107,6 @@ def generator_available(name: str) -> bool:
 
 
 def _generator_year(name: str) -> int:
-    """Extract the trailing year from a generator name (e.g. 2022)."""
     for token in reversed(name.split()):
         if token.isdigit():
             return int(token)
@@ -137,15 +114,8 @@ def _generator_year(name: str) -> int:
 
 
 def list_visual_studio_generators() -> List[str]:
-    """Visual Studio generators advertised by this CMake, newest first.
-
-    Version-agnostic on purpose: works with VS 2019/2022/2026 and any future
-    release without hardcoding generator names (the old list was pinned to
-    "Visual Studio 17 2022"/"Visual Studio 16 2019").
-    """
     names: List[str] = []
     for line in _cmake_help().splitlines():
-        # Generator entries are indented exactly two spaces and contain " = ".
         if line.startswith("  ") and " = " in line:
             name = line.split("=", 1)[0].strip()
             if name.startswith("Visual Studio") and name not in names:
@@ -154,21 +124,28 @@ def list_visual_studio_generators() -> List[str]:
 
 
 def pick_generator(platform_name: str) -> str:
+    """Return the best CMake -G value for *platform_name*.
+
+    On Windows we return an empty string so CMake auto-detects the installed
+    Visual Studio version.  ``cmake --help`` lists every generator CMake knows
+    about, not just the ones that are actually installed, so picking a specific
+    Visual Studio version by name often fails when the user has a different
+    edition (e.g. VS 2026 instead of VS 2022).
+    """
     if platform_name == "windows":
-        for gen in list_visual_studio_generators():
-            if generator_available(gen):
-                return gen
-        if generator_available("Ninja"):
-            log("No Visual Studio generator found; using Ninja instead.")
-            return "Ninja"
-        die("no supported CMake generator found (install Visual Studio or Ninja)")
-    # Linux / macOS
+        # Let CMake auto-detect — it uses vswhere internally and always finds
+        # the right VS install.
+        return ""
     if generator_available("Ninja"):
         return "Ninja"
     return "Unix Makefiles"
 
 
-def is_multi_config(generator: str) -> bool:
+def is_multi_config(generator: str, platform_name: str = "") -> bool:
+    # Empty generator means CMake auto-detects — on Windows that always
+    # picks Visual Studio, which is a multi-config generator.
+    if not generator:
+        return platform_name == "windows"
     lowered = generator.lower()
     return any(tag in lowered for tag in MULTI_CONFIG_GENERATORS)
 
@@ -179,7 +156,6 @@ def default_triplet(platform_name: str) -> str:
         return "x64-windows"
     if platform_name == "linux":
         return "arm64-linux" if machine in ("aarch64", "arm64") else "x64-linux"
-    # macOS
     return "arm64-osx" if machine in ("aarch64", "arm64") else "x64-osx"
 
 
@@ -189,7 +165,6 @@ def find_vcpkg_root() -> Optional[Path]:
         root = Path(env)
         if root.is_dir():
             return root
-    # Fall back to common vcpkg checkout locations.
     for candidate in (
         PROJECT_ROOT.parent / "vcpkg",
         PROJECT_ROOT / "vcpkg",
@@ -208,7 +183,6 @@ def vcpkg_toolchain_path(vcpkg_root: Path) -> Path:
 
 
 def is_interactive() -> bool:
-    """True when stdin is a real terminal (safe to prompt the user)."""
     try:
         return bool(sys.stdin) and sys.stdin.isatty()
     except (AttributeError, ValueError):
@@ -216,7 +190,6 @@ def is_interactive() -> bool:
 
 
 def prompt_yes_no(question: str, default: bool = False) -> bool:
-    """Ask a yes/no question on the terminal and return the answer."""
     suffix = " [Y/n]: " if default else " [y/N]: "
     while True:
         try:
@@ -233,33 +206,50 @@ def prompt_yes_no(question: str, default: bool = False) -> bool:
 
 
 def install_vcpkg(destination: Path, platform_name: str) -> Path:
-    """Clone and bootstrap vcpkg into `destination`; return the vcpkg root.
-
-    Requires git. Non-interactive and safe for CI.
-    """
     toolchain = destination / "scripts" / "buildsystems" / "vcpkg.cmake"
     if toolchain.is_file():
         log(f"vcpkg already present at {destination}; reusing it.")
         return destination
-
     if shutil.which("git") is None:
         die("git is required to install vcpkg (install Git and retry).")
-
     log(f"Cloning vcpkg into {destination} ...")
     destination.parent.mkdir(parents=True, exist_ok=True)
     run([
         "git", "clone", "--depth", "1",
         "https://github.com/microsoft/vcpkg.git", str(destination),
     ])
-
     bootstrap = destination / (
         "bootstrap-vcpkg.bat" if platform_name == "windows" else "bootstrap-vcpkg.sh"
     )
     log(f"Bootstrapping vcpkg ({bootstrap.name}) ...")
-    # Batch files need a shell on Windows; the .sh is executable on POSIX.
     run([str(bootstrap), "-disableMetrics"], shell=platform_name == "windows")
     return destination
 
+
+# ---------------------------------------------------------------------------
+# Dependency linkage helpers
+# ---------------------------------------------------------------------------
+
+def load_dep_config() -> Optional[dict]:
+    """Return the saved dependency config, or None."""
+    if not DEPS_CONFIG.is_file():
+        return None
+    try:
+        return json.loads(DEPS_CONFIG.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def deps_available() -> bool:
+    """True when dependencies/install/ exists and looks complete."""
+    sdl_h = DEPS_INSTALL / "include" / "SDL3" / "SDL.h"
+    txml_h = DEPS_INSTALL / "include" / "tinyxml2.h"
+    return sdl_h.is_file() and txml_h.is_file()
+
+
+# ---------------------------------------------------------------------------
+# CMake configure / build wrappers
+# ---------------------------------------------------------------------------
 
 def configure(platform_name: str, args: argparse.Namespace, build_dir: Path) -> None:
     cmd = ["cmake", "-S", str(PROJECT_ROOT), "-B", str(build_dir)]
@@ -267,15 +257,40 @@ def configure(platform_name: str, args: argparse.Namespace, build_dir: Path) -> 
     if args.generator:
         cmd += ["-G", args.generator]
 
-    # Single-config generators need CMAKE_BUILD_TYPE at configure time;
-    # multi-config generators take --config at build time instead.
-    if not is_multi_config(args.generator):
+    # On Windows with no explicit generator, CMake auto-detects Visual Studio
+    # which is multi-config — skip CMAKE_BUILD_TYPE in that case.
+    multi = is_multi_config(args.generator, platform_name)
+    if not multi:
         cmd += [f"-DCMAKE_BUILD_TYPE={args.config}"]
 
+    # --- Dependency prefix --------------------------------------------------
     if args.toolchain:
         cmd += [f"-DCMAKE_TOOLCHAIN_FILE={args.toolchain}"]
         if args.triplet:
             cmd += [f"-DVCPKG_TARGET_TRIPLET={args.triplet}"]
+    elif deps_available():
+        # Use locally-built dependencies from download_dep.py.
+        log(f"Using local dependencies: {DEPS_INSTALL}")
+        cmd += [f"-DCMAKE_PREFIX_PATH={DEPS_INSTALL}"]
+        shared = args.shared if args.shared is not None else args.static is False
+        cmd += [f"-DBUILD_SHARED_LIBS={'ON' if shared else 'OFF'}"]
+    elif args.toolchain is None and not args.no_deps:
+        # Try vcpkg as a fallback.
+        vcpkg_root = find_vcpkg_root()
+        if vcpkg_root:
+            args.toolchain = str(vcpkg_toolchain_path(vcpkg_root))
+            cmd += [f"-DCMAKE_TOOLCHAIN_FILE={args.toolchain}"]
+            log(f"vcpkg toolchain: {args.toolchain}")
+            if args.triplet is None:
+                args.triplet = default_triplet(platform_name)
+            cmd += [f"-DVCPKG_TARGET_TRIPLET={args.triplet}"]
+        else:
+            die(
+                "No dependencies found.\n\n"
+                "Run one of the following first:\n"
+                f"  python download_dep.py          (recommended – local build)\n"
+                "  vcpkg install sdl3 tinyxml2     (system package manager)\n"
+            )
 
     for definition in args.defines:
         cmd += [f"-D{definition}"]
@@ -283,13 +298,16 @@ def configure(platform_name: str, args: argparse.Namespace, build_dir: Path) -> 
     run(cmd)
 
 
-def build(args: argparse.Namespace, build_dir: Path) -> None:
+def build(args: argparse.Namespace, build_dir: Path, platform_name: str = "") -> None:
     cmd = ["cmake", "--build", str(build_dir)]
 
     if args.target:
         cmd += ["--target", args.target]
-    if args.config and is_multi_config(args.generator):
+
+    multi = is_multi_config(args.generator, platform_name)
+    if args.config and multi:
         cmd += ["--config", args.config]
+
     if args.jobs:
         cmd += ["--parallel", str(args.jobs)]
     if args.verbose:
@@ -299,9 +317,7 @@ def build(args: argparse.Namespace, build_dir: Path) -> None:
 
 
 def build_with_preset(args: argparse.Namespace) -> None:
-    """Configure and build through a CMakePresets.json preset."""
     run(["cmake", "--preset", args.preset])
-
     cmd = ["cmake", "--build", "--preset", args.preset]
     if args.config:
         cmd += ["--config", args.config]
@@ -311,6 +327,10 @@ def build_with_preset(args: argparse.Namespace) -> None:
         cmd += ["--verbose"]
     run(cmd)
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -349,19 +369,19 @@ def main() -> None:
     )
     parser.add_argument(
         "--toolchain", default=None,
-        help="Path to a CMake toolchain file (default: auto-detect vcpkg)",
+        help="Path to a CMake toolchain file (overrides local deps + vcpkg)",
     )
     parser.add_argument(
-        "--no-vcpkg", action="store_true",
-        help="Do not use the vcpkg toolchain (builds the core only)",
+        "--no-deps", action="store_true",
+        help="Do not use local dependencies or vcpkg (core library only)",
     )
     parser.add_argument(
-        "--install-vcpkg", action="store_true",
-        help="Install vcpkg automatically (no prompt) if not found",
+        "--install-deps", action="store_true",
+        help="Install vcpkg automatically (no prompt) if no deps found",
     )
     parser.add_argument(
         "--triplet", default=None,
-        help="vcpkg target triplet (default: per-platform, e.g. x64-windows)",
+        help="vcpkg target triplet (only used with vcpkg toolchain)",
     )
     parser.add_argument(
         "-D", "--define", dest="defines", action="append", default=[],
@@ -372,13 +392,25 @@ def main() -> None:
         "-v", "--verbose", action="store_true",
         help="Verbose build output",
     )
+
+    # Linkage overrides (only meaningful with local deps).
+    linkage = parser.add_mutually_exclusive_group()
+    linkage.add_argument(
+        "--shared", action="store_true", default=None,
+        help="Force shared linkage (overrides download_dep.py config)",
+    )
+    linkage.add_argument(
+        "--static", action="store_true", default=None,
+        help="Force static linkage (overrides download_dep.py config)",
+    )
+
     args = parser.parse_args()
 
     platform_name = detect_platform()
     log(f"Platform: {platform_name} ({platform.system()} {platform.machine()})")
 
     # ------------------------------------------------------------------
-    # Build directory setup (shared by preset and non-preset paths).
+    # Build directory setup
     # ------------------------------------------------------------------
     build_dir = Path(args.build_dir).resolve()
 
@@ -387,7 +419,7 @@ def main() -> None:
         shutil.rmtree(build_dir)
 
     # ------------------------------------------------------------------
-    # Preset mode: delegate everything to CMakePresets.json.
+    # Preset mode
     # ------------------------------------------------------------------
     if args.preset:
         build_with_preset(args)
@@ -395,56 +427,92 @@ def main() -> None:
         return
 
     # ------------------------------------------------------------------
-    # Generator selection.
+    # Generator selection
     # ------------------------------------------------------------------
     if args.generator is None:
         args.generator = pick_generator(platform_name)
     log(f"Generator: {args.generator}")
 
     # ------------------------------------------------------------------
-    # vcpkg toolchain detection (required for the tinyxml2 core dependency;
-    # the WinUI3 / Windows App SDK backend is provisioned via NuGet by CMake).
+    # Resolve shared/static from saved config if not overridden
     # ------------------------------------------------------------------
-    if args.toolchain is None and not args.no_vcpkg:
+    if args.shared is None and args.static is None:
+        cfg = load_dep_config()
+        if cfg and "linkage" in cfg:
+            if cfg["linkage"] == "shared":
+                args.shared = True
+            else:
+                args.static = True
+            log(f"Linkage from saved config: {cfg['linkage']}")
+
+    if args.shared:
+        log("Linkage: shared (.dll / .so)")
+    elif args.static:
+        log("Linkage: static (.lib / .a)")
+    else:
+        log("Linkage: not specified (shared by default)")
+
+    # ------------------------------------------------------------------
+    # Dependency detection
+    # ------------------------------------------------------------------
+    if args.no_deps:
+        log("--no-deps: building core library only (no platform backend)")
+    elif deps_available():
+        log(f"Local dependencies found: {DEPS_INSTALL}")
+    elif args.toolchain:
+        log(f"Using explicit toolchain: {args.toolchain}")
+    else:
         vcpkg_root = find_vcpkg_root()
         if vcpkg_root:
-            args.toolchain = str(vcpkg_toolchain_path(vcpkg_root))
-            log(f"vcpkg toolchain: {args.toolchain}")
+            log(f"vcpkg found at {vcpkg_root}")
         else:
-            # vcpkg is required for the tinyxml2 core dependency (the WinUI3
-            # backend is provisioned via NuGet by CMake). Ask the user before
-            # failing, unless running non-interactively or --install-vcpkg /
-            # --no-vcpkg was passed.
-            install = False
-            if args.install_vcpkg:
-                install = True
-            elif is_interactive():
-                install = prompt_yes_no(
-                    "vcpkg was not found and it is required to build MuluUI "
-                    "(tinyxml2 core dependency; the WinUI3 backend is "
-                    "provisioned via NuGet by CMake). Install vcpkg now?"
+            log("No dependency source found.")
+            if args.install_deps:
+                vcpkg_root = install_vcpkg(
+                    PROJECT_ROOT / "vcpkg", platform_name
                 )
-            if install:
-                vcpkg_root = install_vcpkg(PROJECT_ROOT / "vcpkg", platform_name)
                 args.toolchain = str(vcpkg_toolchain_path(vcpkg_root))
                 log(f"vcpkg installed; toolchain: {args.toolchain}")
-            elif platform_name == "windows":
-                die(
-                    "vcpkg not found and it is required for the tinyxml2 core "
-                    "dependency. Install vcpkg and set VCPKG_ROOT, or pass "
-                    "--no-vcpkg to build without the vcpkg toolchain."
-                )
+            elif is_interactive():
+                print()
+                print("No dependencies found. You have two options:")
+                print(f"  1. Run download_dep.py to build them locally")
+                print(f"     (recommended – self-contained, portable).")
+                print(f"  2. Install vcpkg and use it as the package manager.")
+                print()
+                choice = input("Choose [1/2] (default: 1): ").strip()
+                if choice == "2":
+                    if prompt_yes_no("Install vcpkg now?"):
+                        vcpkg_root = install_vcpkg(
+                            PROJECT_ROOT / "vcpkg", platform_name
+                        )
+                        args.toolchain = str(vcpkg_toolchain_path(vcpkg_root))
+                        log(f"vcpkg installed; toolchain: {args.toolchain}")
+                    else:
+                        die(
+                            "Cannot build without dependencies. "
+                            "Run download_dep.py first, or install vcpkg."
+                        )
+                else:
+                    die(
+                        "Run download_dep.py first to build dependencies locally:\n"
+                        "  python download_dep.py\n"
+                        "Then re-run build_sdk.py."
+                    )
             else:
-                log("vcpkg not found; building without a toolchain file.")
-    elif args.toolchain:
-        log(f"Toolchain: {args.toolchain}")
+                die(
+                    "No dependencies found in non-interactive mode.\n"
+                    "Run download_dep.py first, or pass --install-deps."
+                )
 
+    # ------------------------------------------------------------------
+    # Triplet
+    # ------------------------------------------------------------------
     if args.triplet is None and args.toolchain:
         args.triplet = default_triplet(platform_name)
 
     configure(platform_name, args, build_dir)
-    build(args, build_dir)
-
+    build(args, build_dir, platform_name)
     log(f"Build complete. Outputs in: {build_dir}")
 
 

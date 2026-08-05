@@ -1,24 +1,15 @@
 #include "Mulu/MPlatform.h"
 
-#if defined(MULU_PLATFORM_WINDOWS)
-#include "MWindowsPlatform.h"
-#endif
+#include "MOpenGLPlatform.h"
 
 namespace mulu {
 
 MPlatformBackend* createPlatformBackend(const MString& platformName)
 {
-#if defined(MULU_PLATFORM_WINDOWS)
-    if (platformName.isEmpty() || platformName == "windows" ||
-        platformName == "winui") {
-        return new MWindowsPlatform();
-    }
-#else
+    // The SDL3 + OpenGL 3.3 backend is the only backend.
+    // The platformName parameter is accepted for API compatibility but ignored.
     (void)platformName;
-#endif
-    // No backend for this platform yet (Linux/macOS backends are on the
-    // roadmap). MApplication::exec() will return 1 in that case.
-    return nullptr;
+    return new MOpenGLPlatform();
 }
 
 } // namespace mulu

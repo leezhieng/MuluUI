@@ -6,6 +6,11 @@
 
 using namespace mulu;
 
+#ifdef MULU_HAS_EMBEDDED_FONT
+extern const unsigned char kFontData[];
+extern const unsigned int  kFontDataSize;
+#endif
+
 int main(int argc, char** argv)
 {
     MApplication app(argc, argv);
@@ -28,6 +33,10 @@ int main(int argc, char** argv)
         window = new MWindow();
         window->setCentralWidget(static_cast<MWidget*>(form));
     }
+
+#ifdef MULU_HAS_EMBEDDED_FONT
+    window->setFontData(kFontData, kFontDataSize);
+#endif
 
     // Connect widgets by object name using the object tree built from the .ui.
     auto* button = dynamic_cast<MButton*>(window->findChild("pushButton"));
