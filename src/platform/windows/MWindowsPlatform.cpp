@@ -39,10 +39,12 @@ bool MWindowsPlatform::initialize(int /*argc*/, char** /*argv*/)
     // MddBootstrapInitialize must complete before Application::Start runs.
     // Windows App SDK 2.x requires the full (majorMinor, versionTag, minVersion)
     // triplet — the 1-argument overload no longer exists.
+    PACKAGE_VERSION minVersion{};
+    minVersion.Version = WINDOWSAPPSDK_RUNTIME_VERSION_UINT64;
     const HRESULT hr = MddBootstrapInitialize(
         WINDOWSAPPSDK_RELEASE_MAJORMINOR,
         WINDOWSAPPSDK_RELEASE_VERSION_TAG_W,
-        WINDOWSAPPSDK_RUNTIME_VERSION_UINT64);
+        minVersion);
     return SUCCEEDED(hr);
 }
 
@@ -54,7 +56,7 @@ int MWindowsPlatform::runEventLoop()
     // creates the top-level WinUI Application object; the runtime then
     // invokes MWinUIApp::OnLaunched, where we finally materialize the
     // native windows that were requested before exec().
-    winrt::Microsoft::UI::Xaml::Application::Start([]() {
+    winrt::Microsoft::UI::Xaml::Application::Start([](const auto& /*params*/) {
         auto app = winrt::make<MWinUIApp>();
         if (MWindowsPlatform* platform = MWindowsPlatform::instance()) {
             platform->storeApplication(app);

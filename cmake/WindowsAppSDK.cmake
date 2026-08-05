@@ -219,16 +219,27 @@ function(_mulu_wasdk_apply target)
         target_compile_options("${target}" PRIVATE "/FI${_winui_preamble}")
     endif()
 
-    # Windows App Runtime bootstrap (MddBootstrapInitialize/Shutdown) is used
-    # by the unpackaged WinUI3 backend. PUBLIC because MuluUI is a static
-    # library and final executables must link it too.
+    # Windows App Runtime bootstrap (MddBootstrapInitialize/Shutdown) and the
+    # core runtime library (WINRT_IMPL_*, activation factory, etc.) are linked
+    # PUBLIC because MuluUI is a static library and final executables must link
+    # them too.
     set(_bootstrap_lib
         "${_root}/Microsoft.WindowsAppSDK.Foundation/lib/native/${_arch}/Microsoft.WindowsAppRuntime.Bootstrap.lib")
-    if(NOT EXISTS "${_bootstrap_lib}")
-        message(FATAL_ERROR
-            "MuluUI: Windows App Runtime bootstrap lib not found: ${_bootstrap_lib}")
-    endif()
-    target_link_libraries("${target}" PUBLIC "${_bootstrap_lib}")
+    set(_runtime_lib
+        "${_root}/Microsoft.WindowsAppSDK.Foundation/lib/native/${_arch}/Microsoft.WindowsAppRuntime.lib")
+    foreach(_lib IN ITEMS "${_bootstrap_lib}" "${_runtime_lib}")
+        if(NOT EXISTS "${_lib}")
+            message(FATAL_ERROR
+                "MuluUI: required Windows App SDK library not found: ${_lib}")
+        endif()
+    endforeach()
+
+    # onecoreuap.lib is the umbrella import library for the OneCore API
+    # surface that Windows App SDK apps target.  It provides RoGetActivation-
+    # Factory, RoOriginateLanguageException, and other WinRT base APIs that
+    # are not in the default MSVC link set for classic desktop apps.
+    target_link_libraries("${target}" PUBLIC
+        "${_bootstrap_lib}" "${_runtime_lib}" onecoreuap.lib)
 endfunction()
 
 # ---------------------------------------------------------------------------

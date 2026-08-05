@@ -1,5 +1,51 @@
 cmake_minimum_required(VERSION 3.22)
 
+# ---------------------------------------------------------------------------
+# Auto-detect the vcpkg CMake toolchain from the VCPKG_ROOT environment
+# variable (or from common checkout locations).  This block must run before
+# the first project() call so that the toolchain can set up the triplet,
+# compiler paths, etc.
+# ---------------------------------------------------------------------------
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    # 1) VCPKG_ROOT environment variable
+    if(DEFINED ENV{VCPKG_ROOT})
+        set(_vcpkg_candidate "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+        if(EXISTS "${_vcpkg_candidate}")
+            set(CMAKE_TOOLCHAIN_FILE "${_vcpkg_candidate}" CACHE FILEPATH
+                "vcpkg CMake toolchain (auto-detected from VCPKG_ROOT)")
+            message(STATUS "MuluUI: vcpkg toolchain detected via VCPKG_ROOT:")
+            message(STATUS "         ${CMAKE_TOOLCHAIN_FILE}")
+        endif()
+    endif()
+
+    # 2) Fall back to common checkout locations (sibling dir, in-project, ~/vcpkg)
+    if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+        foreach(_dir IN ITEMS
+            "${CMAKE_CURRENT_SOURCE_DIR}/../vcpkg"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg"
+            "$ENV{HOME}/vcpkg"
+            "$ENV{USERPROFILE}/vcpkg"
+        )
+            set(_candidate "${_dir}/scripts/buildsystems/vcpkg.cmake")
+            if(EXISTS "${_candidate}")
+                set(CMAKE_TOOLCHAIN_FILE "${_candidate}" CACHE FILEPATH
+                    "vcpkg CMake toolchain (auto-detected)")
+                message(STATUS "MuluUI: vcpkg toolchain found at ${_candidate}")
+                break()
+            endif()
+        endforeach()
+    endif()
+
+    if(DEFINED CMAKE_TOOLCHAIN_FILE)
+        message(STATUS "MuluUI: building with vcpkg dependencies")
+    else()
+        message(STATUS "MuluUI: vcpkg not found; core dependencies (e.g. tinyxml2)")
+        message(STATUS "         will not be available unless provided externally.")
+        message(STATUS "         Install vcpkg and set VCPKG_ROOT, or run")
+        message(STATUS "         build_sdk.py --install-vcpkg to auto-install it.")
+    endif()
+endif()
+
 project(MuluUI
     VERSION 0.1.0
     DESCRIPTION "Cross-platform C++ GUI SDK wrapping native toolkits"
@@ -15,9 +61,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ---------------------------------------------------------------------------
+# Core dependencies
+# ---------------------------------------------------------------------------
+# tinyxml2 powers the Qt Designer .ui form loader (MUiLoader). Linked PUBLIC
+# because MuluUI is a static library and consumers need it too.
+find_package(tinyxml2 CONFIG QUIET)
+
+# ---------------------------------------------------------------------------
 # MuluUI core library
 # ---------------------------------------------------------------------------
-add_library(MuluUI
+set(MULU_CORE_SOURCES
     src/core/MObject.cpp
     src/core/MApplication.cpp
     src/core/MPlatform.cpp
@@ -26,8 +79,14 @@ add_library(MuluUI
     src/core/MLabel.cpp
     src/core/MButton.cpp
     src/core/MStackLayout.cpp
-    src/core/MUiLoader.cpp
 )
+
+# MUiLoader requires tinyxml2; exclude it when tinyxml2 is unavailable.
+if(tinyxml2_FOUND)
+    list(APPEND MULU_CORE_SOURCES src/core/MUiLoader.cpp)
+endif()
+
+add_library(MuluUI ${MULU_CORE_SOURCES})
 
 target_include_directories(MuluUI PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -36,13 +95,17 @@ target_include_directories(MuluUI PUBLIC
 
 target_compile_features(MuluUI PUBLIC cxx_std_20)
 
-# ---------------------------------------------------------------------------
-# Core dependencies
-# ---------------------------------------------------------------------------
-# tinyxml2 powers the Qt Designer .ui form loader (MUiLoader). Linked PUBLIC
-# because MuluUI is a static library and consumers need it too.
-find_package(tinyxml2 CONFIG REQUIRED)
-target_link_libraries(MuluUI PUBLIC tinyxml2::tinyxml2)
+if(tinyxml2_FOUND)
+    message(STATUS "MuluUI: tinyxml2 found – MUiLoader (.ui form loader) enabled")
+    target_link_libraries(MuluUI PUBLIC tinyxml2::tinyxml2)
+    target_compile_definitions(MuluUI PUBLIC MULU_HAS_TINYXML2=1)
+else()
+    message(WARNING
+        "MuluUI: tinyxml2 not found – MUiLoader (.ui form loader) will be "
+        "unavailable. Install tinyxml2 via vcpkg (vcpkg install tinyxml2) or "
+        "your system package manager."
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # Platform backends
